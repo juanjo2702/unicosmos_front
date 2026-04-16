@@ -7,6 +7,7 @@ import GameLobby from './pages/GameLobby'
 import PlayerBuzzer from './components/PlayerBuzzer'
 import PresenterDashboard from './pages/PresenterDashboard'
 import AdminDashboard from './pages/AdminDashboard'
+import GameDisplay from './pages/GameDisplay'
 import NotFound from './pages/NotFound'
 import Login from './pages/Login'
 import Register from './pages/Register'
@@ -44,10 +45,16 @@ function App() {
               <Layout><PlayerBuzzer /></Layout>
             </PrivateRoute>
           } />
+
+          <Route path="/display/:gameId" element={
+            <PrivateRoute fallback={<LoadingFallback />}>
+              <GameDisplay />
+            </PrivateRoute>
+          } />
           
           {/* Presenter route - requires 'presenter' role */}
           <Route path="/presenter" element={
-            <PrivateRoute requiredRole="presenter" fallback={<LoadingFallback />}>
+            <PrivateRoute requiredRole={['presenter', 'admin']} fallback={<LoadingFallback />}>
               <Layout><PresenterDashboard /></Layout>
             </PrivateRoute>
           } />

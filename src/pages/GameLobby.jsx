@@ -1,339 +1,398 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import { useNavigate } from 'react-router-dom'
-import useGameStore from '../stores/gameStore'
 import toast from 'react-hot-toast'
+import apiClient from '../api/client'
+import useAuthStore from '../stores/authStore'
+import useGameStore from '../stores/gameStore'
+
+const emptyCreateForm = {
+  title: '',
+  description: '',
+  max_teams: 4,
+  rounds_count: 3,
+  time_per_question: 30,
+  response_time_limit: 15,
+  category_ids: [],
+}
+
+const colorChoices = ['#22c55e', '#38bdf8', '#f97316', '#e879f9', '#facc15', '#fb7185']
+
+const unwrapCollection = (payload) => {
+  if (Array.isArray(payload?.data?.data)) {
+    return payload.data.data
+  }
+
+  if (Array.isArray(payload?.data)) {
+    return payload.data
+  }
+
+  return []
+}
 
 const GameLobby = () => {
   const navigate = useNavigate()
-  const { 
-    gameId, 
-    teams, 
+  const { user } = useAuthStore()
+  const {
     games,
+    currentGame,
+    joinedTeam,
     loading,
-    error,
-    fetchGames, 
-    createGame, 
+    fetchGames,
+    createGame,
     joinGame,
-    setGameId
+    setGameId,
   } = useGameStore()
-  const [joinCode, setJoinCode] = useState('')
-  
+
+  const [categories, setCategories] = useState([])
+  const [createForm, setCreateForm] = useState(emptyCreateForm)
+  const [joinForm, setJoinForm] = useState({
+    code: '',
+    team_name: user?.team?.name || `${user?.name || 'Equipo'} Team`,
+    team_color: colorChoices[0],
+  })
+
+  const canCreateGames = user?.role === 'presenter' || user?.role === 'admin'
+
   useEffect(() => {
-    const loadGames = async () => {
-      try {
-        await fetchGames()
-      } catch (err) {
-        toast.error('Error al cargar los juegos')
-        console.error('Error fetching games:', err)
-      }
-    }
-    loadGames()
+    fetchGames().catch(() => {
+      toast.error('No se pudieron cargar los juegos')
+    })
   }, [fetchGames])
-  
-  const handleCreateGame = async () => {
+
+  useEffect(() => {
+    if (!canCreateGames) {
+      return
+    }
+
+    apiClient.get('/api/categories')
+      .then((response) => {
+        setCategories(unwrapCollection(response))
+      })
+      .catch(() => {
+        toast.error('No se pudieron cargar las categorías')
+      })
+  }, [canCreateGames])
+
+  useEffect(() => {
+    setJoinForm((current) => ({
+      ...current,
+      team_name: current.team_name || user?.team?.name || `${user?.name || 'Equipo'} Team`,
+    }))
+  }, [user?.name, user?.team?.name])
+
+  const accessibleGames = useMemo(() => games.slice(0, 12), [games])
+  const categoriesReady = categories.length > 0
+  const canSubmitCreateForm = !loading && categoriesReady && createForm.category_ids.length > 0 && createForm.title.trim().length > 0
+
+  const handleCreateGame = async (event) => {
+    event.preventDefault()
+
+    if (!categoriesReady) {
+      toast.error('Primero carga las categorÃ­as disponibles')
+      return
+    }
+
+    if (createForm.category_ids.length === 0) {
+      toast.error('Selecciona al menos una categoría para la partida')
+      return
+    }
+
     try {
-      const gameData = {
-        name: `Trivia ${new Date().toLocaleDateString()}`,
-        max_teams: 4,
-        category: 'General'
-      }
-      const game = await createGame(gameData)
-      toast.success(`Juego "${game.name}" creado exitosamente`)
-      setGameId(game.id)
-      navigate('/play')
-    } catch (err) {
-      toast.error(err.data?.error || 'Error al crear el juego')
-      console.error('Error creating game:', err)
+      const game = await createGame(createForm)
+      toast.success(`Juego ${game.name} creado`)
+      setCreateForm(emptyCreateForm)
+      navigate('/presenter')
+    } catch (error) {
+      toast.error(error.data?.message || error.message || 'No se pudo crear el juego')
     }
   }
-  
-  const handleJoinGame = async () => {
-    if (!joinCode.trim()) return
-    
+
+  const handleJoinGame = async (event) => {
+    event.preventDefault()
+
+    if (!joinForm.code.trim()) {
+      toast.error('Ingresa el código del juego')
+      return
+    }
+
     try {
-      const teamData = {
-        teamName: `Equipo ${Math.random().toString(36).substr(2, 5)}`,
-        color: `#${Math.floor(Math.random()*16777215).toString(16)}`
-      }
-      const result = await joinGame(joinCode.trim(), teamData)
-      toast.success(`Te has unido al juego "${result.game?.name || joinCode}"`)
+      const result = await joinGame(joinForm.code.trim().toUpperCase(), joinForm)
+      setGameId(result.game?.id ?? null)
+      toast.success(`Te uniste a ${result.game?.name ?? 'la partida'}`)
       navigate('/play')
-    } catch (err) {
-      toast.error(err.data?.error || 'Error al unirse al juego')
-      console.error('Error joining game:', err)
+    } catch (error) {
+      toast.error(error.data?.message || error.message || 'No se pudo unir al juego')
     }
   }
-  
-  const handleQuickStart = () => {
-    navigate('/play')
+
+  const toggleCategory = (categoryId) => {
+    setCreateForm((current) => ({
+      ...current,
+      category_ids: current.category_ids.includes(categoryId)
+        ? current.category_ids.filter((id) => id !== categoryId)
+        : [...current.category_ids, categoryId],
+    }))
   }
-  
+
+  const handleQuickAccess = (game) => {
+    setJoinForm((current) => ({
+      ...current,
+      code: game.code,
+    }))
+  }
+
   return (
-    <div className="max-w-4xl mx-auto">
-      <div className="text-center mb-12">
-        <motion.h1 
-          initial={{ y: -20, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          className="text-5xl font-bold mb-4 bg-gradient-to-r from-primary-400 via-purple-400 to-primary-400 bg-clip-text text-transparent"
-        >
-          Trivia UNITEPC
-        </motion.h1>
-        <motion.p 
-          initial={{ y: 20, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          transition={{ delay: 0.1 }}
-          className="text-xl text-gray-300 mb-2"
-        >
-          Sistema Interactivo de Concurso de Trivia
-        </motion.p>
-        <p className="text-gray-400">Sistema de buzzer de latencia ultra-baja para desafíos de conocimiento competitivo</p>
-      </div>
-      
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-12">
-        {/* Create Game Card */}
+    <div className="mx-auto max-w-6xl space-y-8">
+      <section className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
         <motion.div
-          initial={{ x: -50, opacity: 0 }}
-          animate={{ x: 0, opacity: 1 }}
-          transition={{ delay: 0.2 }}
-          className="glass-morphism p-8 rounded-2xl hover:bg-white/5 transition-all"
+          initial={{ opacity: 0, y: 24 }}
+          animate={{ opacity: 0.96, y: 0 }}
+          className="glass-morphism rounded-3xl p-8"
         >
-          <div className="text-center mb-6">
-            <div className="w-16 h-16 rounded-full bg-gradient-to-r from-primary-500 to-purple-500 flex items-center justify-center mx-auto mb-4">
-              <span className="text-2xl">🎮</span>
+          <p className="mb-3 text-sm uppercase tracking-[0.35em] text-cyan-300">Estado actual</p>
+          <h2 className="mb-4 text-4xl font-black leading-tight">
+            Ahora la partida puede nacer con categorías elegidas y un flujo real de preguntas.
+          </h2>
+          <p className="max-w-2xl text-slate-300">
+            {canCreateGames
+              ? 'Crea la sesión, elige las categorías, comparte el código y luego controla las preguntas y el temporizador desde el panel.'
+              : 'Únete con el código del presentador y entra directo a la pantalla donde verás la pregunta y el buzzer.'}
+          </p>
+
+          <div className="mt-8 grid gap-4 md:grid-cols-3">
+            <div className="rounded-2xl bg-white/5 p-4">
+              <p className="text-sm text-slate-400">Partidas visibles</p>
+              <p className="mt-2 text-3xl font-bold">{accessibleGames.length}</p>
             </div>
-            <h2 className="text-2xl font-bold mb-2">Crear Nuevo Juego</h2>
-            <p className="text-gray-400">Inicia una nueva sesión de trivia con configuraciones personalizadas</p>
-          </div>
-          
-          <div className="space-y-4">
-            <div className="p-4 rounded-xl bg-gray-800/50">
-               <h3 className="font-medium mb-2">Configuración del Juego</h3>
-               <ul className="space-y-2 text-sm text-gray-300">
-                 <li className="flex items-center gap-2">
-                   <span className="text-green-500">✓</span>
-                   <span>Máximo 4 equipos</span>
-                 </li>
-                 <li className="flex items-center gap-2">
-                   <span className="text-green-500">✓</span>
-                   <span>Sistema de buzzer en tiempo real</span>
-                 </li>
-                 <li className="flex items-center gap-2">
-                   <span className="text-green-500">✓</span>
-                   <span>Seguimiento automático de puntajes</span>
-                 </li>
-                 <li className="flex items-center gap-2">
-                   <span className="text-green-500">✓</span>
-                   <span>Múltiples categorías</span>
-                 </li>
-               </ul>
+            <div className="rounded-2xl bg-white/5 p-4">
+              <p className="text-sm text-slate-400">Juego activo local</p>
+              <p className="mt-2 text-lg font-semibold">{currentGame?.name || 'Ninguno'}</p>
             </div>
-            
-            <button
-              onClick={handleCreateGame}
-              className="w-full btn-primary py-4 text-lg"
-            >
-               Crear Sesión de Juego
-            </button>
+            <div className="rounded-2xl bg-white/5 p-4">
+              <p className="text-sm text-slate-400">Tu equipo</p>
+              <p className="mt-2 text-lg font-semibold">{joinedTeam?.name || user?.team?.name || 'Sin asignar'}</p>
+            </div>
           </div>
         </motion.div>
-        
-        {/* Join Game Card */}
+
         <motion.div
-          initial={{ x: 50, opacity: 0 }}
-          animate={{ x: 0, opacity: 1 }}
-          transition={{ delay: 0.3 }}
-          className="glass-morphism p-8 rounded-2xl hover:bg-white/5 transition-all"
+          initial={{ opacity: 0, y: 24 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.1 }}
+          className="glass-morphism rounded-3xl p-8"
         >
-          <div className="text-center mb-6">
-            <div className="w-16 h-16 rounded-full bg-gradient-to-r from-green-500 to-emerald-500 flex items-center justify-center mx-auto mb-4">
-              <span className="text-2xl">👥</span>
-            </div>
-             <h2 className="text-2xl font-bold mb-2">Unirse a Juego Existente</h2>
-            <p className="text-gray-400">Ingresa un código de juego para unirte a una sesión activa</p>
-          </div>
-          
-          <div className="space-y-4">
+          <h3 className="mb-4 text-2xl font-bold">Unirse a una partida</h3>
+          <form className="space-y-4" onSubmit={handleJoinGame}>
             <div>
-               <label className="block text-sm font-medium mb-2">Código del Juego</label>
-               <input
-                 type="text"
-                 value={joinCode}
-                 onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
-                 placeholder="Ingresa código del juego (ej: ABC123)"
-                className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-xl focus:outline-none focus:border-primary-500"
+              <label className="mb-2 block text-sm text-slate-300">Código</label>
+              <input
+                value={joinForm.code}
+                onChange={(event) => setJoinForm((current) => ({ ...current, code: event.target.value.toUpperCase() }))}
+                className="w-full rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 outline-none transition focus:border-cyan-400"
+                placeholder="Ej: 9A31BC"
               />
             </div>
-            
-            <div className="p-4 rounded-xl bg-gray-800/50">
-               <h3 className="font-medium mb-2">Opciones de Unión Rápida</h3>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  onClick={() => setJoinCode('TRIVIA2024')}
-                  className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm"
-                >
-                  TRIVIA2024
-                </button>
-                <button
-                  onClick={() => setJoinCode('UNITE2024')}
-                  className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm"
-                >
-                  UNITE2024
-                </button>
-                <button
-                  onClick={() => setJoinCode('QUIZMASTER')}
-                  className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm"
-                >
-                  QUIZMASTER
-                </button>
+            <div>
+              <label className="mb-2 block text-sm text-slate-300">Nombre del equipo</label>
+              <input
+                value={joinForm.team_name}
+                onChange={(event) => setJoinForm((current) => ({ ...current, team_name: event.target.value }))}
+                className="w-full rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 outline-none transition focus:border-cyan-400"
+                placeholder="Equipo Relámpago"
+              />
+            </div>
+            <div>
+              <label className="mb-2 block text-sm text-slate-300">Color</label>
+              <div className="flex flex-wrap gap-3">
+                {colorChoices.map((color) => (
+                  <button
+                    key={color}
+                    type="button"
+                    onClick={() => setJoinForm((current) => ({ ...current, team_color: color }))}
+                    className={`h-10 w-10 rounded-full border-2 transition ${joinForm.team_color === color ? 'border-white scale-110' : 'border-transparent'}`}
+                    style={{ backgroundColor: color }}
+                  />
+                ))}
               </div>
             </div>
-            
-            <button
-              onClick={handleJoinGame}
-              disabled={!joinCode.trim()}
-              className="w-full btn-secondary py-4 text-lg disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-               Unirse al Juego
+            <button type="submit" className="btn-primary w-full" disabled={loading}>
+              {loading ? 'Entrando...' : 'Entrar al juego'}
+            </button>
+          </form>
+        </motion.div>
+      </section>
+
+      {canCreateGames && (
+        <section className="glass-morphism rounded-3xl p-8">
+          <div className="mb-6 flex items-center justify-between gap-4">
+            <div>
+              <h3 className="text-2xl font-bold">Crear nueva partida</h3>
+              <p className="text-slate-300">Debes elegir las categorías que formarán el juego.</p>
+            </div>
+            <button className="rounded-xl bg-white/5 px-4 py-2 hover:bg-white/10" onClick={() => fetchGames()}>
+              Refrescar lista
             </button>
           </div>
-        </motion.div>
-      </div>
-      
-      {/* Quick Actions */}
-      <div className="glass-morphism p-8 rounded-2xl mb-12">
-         <h2 className="text-2xl font-bold mb-6 text-center">Acciones Rápidas</h2>
-        
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-           <button
-             onClick={handleQuickStart}
-             className="p-6 rounded-xl bg-gradient-to-r from-primary-600 to-primary-700 hover:from-primary-700 hover:to-primary-800 transition-all text-left"
-           >
-             <div className="text-3xl mb-3">🚀</div>
-             <h3 className="text-xl font-bold mb-2">Inicio Rápido</h3>
-             <p className="text-gray-300">Entra a un juego con configuraciones predeterminadas</p>
-           </button>
-          
-           <button
-             onClick={() => navigate('/presenter')}
-             className="p-6 rounded-xl bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800 transition-all text-left"
-           >
-             <div className="text-3xl mb-3">🎤</div>
-             <h3 className="text-xl font-bold mb-2">Modo Presentador</h3>
-             <p className="text-gray-300">Controla el flujo del juego y los puntajes</p>
-           </button>
-          
-           <button
-             onClick={() => navigate('/admin')}
-             className="p-6 rounded-xl bg-gradient-to-r from-gray-700 to-gray-800 hover:from-gray-800 hover:to-gray-900 transition-all text-left"
-           >
-             <div className="text-3xl mb-3">⚙️</div>
-             <h3 className="text-xl font-bold mb-2">Panel de Administración</h3>
-             <p className="text-gray-300">Gestiona preguntas y configuraciones del sistema</p>
-           </button>
-        </div>
-      </div>
-      
-      {/* Game Preview */}
-      <div className="glass-morphism p-8 rounded-2xl">
-          <h2 className="text-2xl font-bold mb-6">Juegos Disponibles</h2>
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          {games.length === 0 ? (
-            <div className="col-span-full text-center py-12">
-              <p className="text-gray-400 text-lg">No hay juegos activos. ¡Crea el primero!</p>
+
+          <form className="grid gap-4 md:grid-cols-2" onSubmit={handleCreateGame}>
+            <div className="md:col-span-2">
+              <label className="mb-2 block text-sm text-slate-300">Nombre del juego</label>
+              <input
+                value={createForm.title}
+                onChange={(event) => setCreateForm((current) => ({ ...current, title: event.target.value }))}
+                className="w-full rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 outline-none transition focus:border-cyan-400"
+                placeholder="Trivia de la noche"
+                required
+              />
             </div>
-          ) : (
-            games.map((game) => (
-              <div key={game.id} className="p-6 rounded-xl bg-gray-800/50 hover:bg-gray-800/70 transition-all">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="w-12 h-12 rounded-full bg-gradient-to-r from-primary-500 to-purple-500 flex items-center justify-center">
-                    <span className="text-2xl">🎮</span>
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-lg">{game.name || `Juego ${game.id}`}</h3>
-                    <p className="text-gray-400 text-sm">Código: {game.code || game.id}</p>
-                  </div>
-                </div>
-                
-                <div className="space-y-2">
-                  <div className="flex justify-between items-center">
-                    <span className="text-gray-400">Equipos</span>
-                    <span className="text-2xl font-bold">{game.teams_count || game.teams?.length || 0}</span>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-gray-400">Estado</span>
-                    <span className={`font-semibold ${game.status === 'active' ? 'text-green-500' : game.status === 'finished' ? 'text-gray-500' : 'text-yellow-500'}`}>
-                      {game.status === 'active' ? '● Activo' : game.status === 'finished' ? '● Finalizado' : '● Esperando'}
-                    </span>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-gray-400">Creado por</span>
-                    <span className="text-sm">{game.creator?.name || 'Admin'}</span>
-                  </div>
-                </div>
-                
-                <button 
-                  onClick={() => {
-                    setJoinCode(game.code || game.id)
-                    handleJoinGame()
-                  }}
-                  className="w-full mt-4 px-4 py-2 bg-primary-600 hover:bg-primary-700 rounded-lg"
-                >
-                  Unirse
-                </button>
+            <div className="md:col-span-2">
+              <label className="mb-2 block text-sm text-slate-300">Descripción</label>
+              <textarea
+                value={createForm.description}
+                onChange={(event) => setCreateForm((current) => ({ ...current, description: event.target.value }))}
+                rows={3}
+                className="w-full rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 outline-none transition focus:border-cyan-400"
+                placeholder="Tema, reglas y observaciones"
+              />
+            </div>
+            <div className="md:col-span-2">
+              <label className="mb-2 block text-sm text-slate-300">Categorías del juego</label>
+              <p className="mb-3 text-xs text-slate-400">
+                {categoriesReady
+                  ? `${createForm.category_ids.length} categorÃ­as seleccionadas`
+                  : 'TodavÃ­a no hay categorÃ­as disponibles para crear la partida'}
+              </p>
+              <div className="grid gap-3 md:grid-cols-3">
+                {categories.map((category) => {
+                  const selected = createForm.category_ids.includes(category.id)
+                  return (
+                    <button
+                      key={category.id}
+                      type="button"
+                      onClick={() => toggleCategory(category.id)}
+                      className={`rounded-2xl border px-4 py-3 text-left transition ${
+                        selected ? 'border-cyan-300 bg-cyan-400/10' : 'border-white/10 bg-white/5 hover:bg-white/10'
+                      }`}
+                    >
+                      <p className="font-semibold">{category.name}</p>
+                      <p className="text-sm text-slate-400">{category.description || 'Sin descripción'}</p>
+                    </button>
+                  )
+                })}
               </div>
-            ))
-          )}
-        </div>
-        
-        <div className="mt-8 pt-8 border-t border-gray-700">
-          <div className="flex flex-col md:flex-row justify-between items-center gap-4">
+            </div>
             <div>
-               <h3 className="font-semibold mb-2">Sesión de Juego Actual</h3>
-               <p className="text-gray-400">
-                 ID del Juego: <span className="font-mono bg-gray-800 px-2 py-1 rounded">{gameId}</span>
-               </p>
+              <label className="mb-2 block text-sm text-slate-300">Máximo de equipos</label>
+              <input
+                type="number"
+                min="2"
+                max="20"
+                value={createForm.max_teams}
+                onChange={(event) => setCreateForm((current) => ({ ...current, max_teams: Number(event.target.value) }))}
+                className="w-full rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 outline-none transition focus:border-cyan-400"
+              />
             </div>
-            
-            <div className="flex gap-3">
-               <button className="px-6 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg">
-                 Copiar Enlace del Juego
-               </button>
-               <button className="px-6 py-2 bg-primary-600 hover:bg-primary-700 rounded-lg">
-                 Compartir con Equipos
-               </button>
+            <div>
+              <label className="mb-2 block text-sm text-slate-300">Tiempo de espera antes del buzzer</label>
+              <input
+                type="number"
+                min="5"
+                max="120"
+                value={createForm.time_per_question}
+                onChange={(event) => setCreateForm((current) => ({ ...current, time_per_question: Number(event.target.value) }))}
+                className="w-full rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 outline-none transition focus:border-cyan-400"
+              />
             </div>
+            <div>
+              <label className="mb-2 block text-sm text-slate-300">Tiempo para responder</label>
+              <input
+                type="number"
+                min="5"
+                max="120"
+                value={createForm.response_time_limit}
+                onChange={(event) => setCreateForm((current) => ({ ...current, response_time_limit: Number(event.target.value) }))}
+                className="w-full rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 outline-none transition focus:border-cyan-400"
+              />
+            </div>
+            <div>
+              <label className="mb-2 block text-sm text-slate-300">Rondas</label>
+              <input
+                type="number"
+                min="1"
+                max="10"
+                value={createForm.rounds_count}
+                onChange={(event) => setCreateForm((current) => ({ ...current, rounds_count: Number(event.target.value) }))}
+                className="w-full rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 outline-none transition focus:border-cyan-400"
+              />
+            </div>
+            <div className="flex items-end">
+              <button type="submit" className="btn-primary w-full" disabled={!canSubmitCreateForm}>
+                {loading ? 'Creando...' : 'Crear y administrar'}
+              </button>
+            </div>
+          </form>
+        </section>
+      )}
+
+      <section className="glass-morphism rounded-3xl p-8">
+        <div className="mb-6 flex items-center justify-between gap-4">
+          <div>
+            <h3 className="text-2xl font-bold">Partidas disponibles</h3>
+            <p className="text-slate-300">Usa el código para entrar o administra la tuya.</p>
           </div>
+          <button className="rounded-xl bg-white/5 px-4 py-2 hover:bg-white/10" onClick={() => fetchGames()}>
+            Actualizar
+          </button>
         </div>
-      </div>
-      
-      {/* Features */}
-      <div className="mt-12 text-center">
-         <h3 className="text-xl font-bold mb-6">Características Principales</h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="p-4">
-            <div className="text-3xl mb-2">⚡</div>
-             <p className="font-medium">Latencia Ultra-Baja</p>
-             <p className="text-sm text-gray-400">Respuesta de buzzer en tiempo real</p>
+
+        {accessibleGames.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-white/15 p-10 text-center text-slate-300">
+            No hay partidas accesibles todavía.
           </div>
-          <div className="p-4">
-            <div className="text-3xl mb-2">🎯</div>
-             <p className="font-medium">Competencia Justa</p>
-             <p className="text-sm text-gray-400">Sistema de tiempo preciso</p>
+        ) : (
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {accessibleGames.map((game) => (
+              <div key={game.id} className="rounded-3xl border border-white/10 bg-slate-950/40 p-5">
+                <div className="mb-4 flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.3em] text-cyan-300">{game.status}</p>
+                    <h4 className="mt-2 text-xl font-bold">{game.name}</h4>
+                  </div>
+                  <div className="rounded-xl bg-white/5 px-3 py-2 text-sm font-semibold">{game.code}</div>
+                </div>
+
+                <div className="space-y-2 text-sm text-slate-300">
+                  <p>Equipos: {game.teams_count ?? game.teams?.length ?? 0} / {game.max_teams ?? game.settings?.max_teams ?? 10}</p>
+                  <p>Creador: {game.creator?.name || 'Sin dato'}</p>
+                  <p>Tiempo de espera: {game.time_per_question || 30}s</p>
+                  <p>Categorías: {game.category_ids?.length || game.settings?.category_ids?.length || 0}</p>
+                </div>
+
+                <div className="mt-5 flex flex-wrap gap-3">
+                  <button
+                    className="rounded-xl bg-cyan-500 px-4 py-2 font-semibold text-slate-950 hover:bg-cyan-400"
+                    onClick={() => handleQuickAccess(game)}
+                  >
+                    Usar código
+                  </button>
+                  {(user?.role === 'presenter' || user?.role === 'admin') && (
+                    <button
+                      className="rounded-xl bg-white/5 px-4 py-2 hover:bg-white/10"
+                      onClick={() => {
+                        setGameId(game.id)
+                        navigate('/presenter')
+                      }}
+                    >
+                      Administrar
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
           </div>
-          <div className="p-4">
-            <div className="text-3xl mb-2">📊</div>
-             <p className="font-medium">Analíticas en Vivo</p>
-             <p className="text-sm text-gray-400">Seguimiento de puntajes en tiempo real</p>
-          </div>
-          <div className="p-4">
-            <div className="text-3xl mb-2">🔧</div>
-             <p className="font-medium">Configuraciones Flexibles</p>
-             <p className="text-sm text-gray-400">Reglas de juego personalizables</p>
-          </div>
-        </div>
-      </div>
+        )}
+      </section>
     </div>
   )
 }

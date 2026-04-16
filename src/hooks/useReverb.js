@@ -1,116 +1,274 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
-import echo from '../echo'
+import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
 import apiClient from '../api/client'
+import echo from '../echo'
+import useGameStore from '../stores/gameStore'
 
-const useReverb = (gameId = 'default') => {
+const unwrap = (payload) => {
+  if (payload?.success && Object.prototype.hasOwnProperty.call(payload, 'data')) {
+    return payload.data
+  }
+
+  return payload
+}
+
+const initialBuzzerState = {
+  pressed: false,
+  teamId: null,
+  timestamp: null,
+  locked: false,
+  acceptingBuzzers: false,
+  unlockAt: null,
+  remainingSeconds: 0,
+  countdownSeconds: 0,
+  responseTimeLimit: 0,
+  responseStartedAt: null,
+  responseEndsAt: null,
+  responseRemainingSeconds: 0,
+  answeringTeamId: null,
+}
+
+const getRemainingSeconds = (targetDate) => {
+  if (!targetDate) {
+    return 0
+  }
+
+  const remainingMs = new Date(targetDate).getTime() - Date.now()
+  if (remainingMs <= 0) {
+    return 0
+  }
+
+  return Math.ceil(remainingMs / 1000)
+}
+
+const useReverb = (gameId) => {
   const [isConnected, setIsConnected] = useState(false)
-  const [buzzerState, setBuzzerState] = useState({
-    pressed: false,
-    teamId: null,
-    timestamp: null
-  })
+  const [buzzerState, setBuzzerState] = useState(initialBuzzerState)
   const [gameState, setGameState] = useState(null)
 
-  // Listen to events
+  const syncLobby = useCallback(async () => {
+    if (!gameId) {
+      return null
+    }
+
+    try {
+      const response = await apiClient.get(`/api/games/${gameId}/lobby`)
+      const lobby = unwrap(response)
+
+      if (lobby?.game) {
+        setGameState(lobby.game)
+        useGameStore.getState().setCurrentGameData(lobby.game)
+      }
+
+      if (lobby?.buzzer) {
+        setBuzzerState((current) => ({ ...current, ...lobby.buzzer }))
+      }
+
+      return lobby
+    } catch (error) {
+      console.error('Error getting game status:', error)
+      return null
+    }
+  }, [gameId])
+
   useEffect(() => {
-    const channel = echo.channel(`game.${gameId}`)
+    if (!gameId) {
+      setBuzzerState(initialBuzzerState)
+      setGameState(null)
+      return undefined
+    }
 
-    channel.listen('.buzzer.pressed', (data) => {
-      console.log('Buzzer pressed event:', data)
-      setBuzzerState({
-        pressed: true,
-        teamId: data.teamId,
-        timestamp: data.timestamp
-      })
-      toast.success(`¡Equipo ${data.teamId} presionó el buzzer!`)
-    })
-
-    channel.listen('.buzzer.reset', () => {
-      console.log('Buzzer reset event')
-      setBuzzerState({
-        pressed: false,
-        teamId: null,
-        timestamp: null
-      })
-      toast('Buzzer reiniciado', { icon: '🔄' })
-    })
-
-    channel.listen('.buzzer.locked', ({ locked }) => {
-      console.log('Buzzer locked event:', locked)
-      toast(locked ? 'Buzzer bloqueado' : 'Buzzer desbloqueado', {
-        icon: locked ? '🔒' : '🔓'
-      })
-    })
-
-    channel.listen('.game.started', (data) => {
-      console.log('Game started event:', data)
-      setGameState(data.game)
-      toast.success(`¡Juego ${data.gameId} iniciado!`)
-    })
-
-    // Connect to channel
-    channel.subscribed(() => {
-      setIsConnected(true)
-      console.log('Connected to Reverb channel:', channel.name)
-    })
-
-    channel.error((error) => {
-      console.error('Reverb channel error:', error)
-      toast.error('Error de conexión')
-    })
+    syncLobby()
+    const intervalId = window.setInterval(syncLobby, 3000)
 
     return () => {
-      channel.unsubscribe()
+      window.clearInterval(intervalId)
+    }
+  }, [gameId, syncLobby])
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setBuzzerState((current) => {
+        const nextRemainingSeconds = getRemainingSeconds(current.unlockAt)
+        const nextResponseRemainingSeconds = getRemainingSeconds(current.responseEndsAt)
+        const shouldAcceptBuzzers = (
+          !current.locked &&
+          !current.pressed &&
+          !!current.unlockAt &&
+          nextRemainingSeconds === 0
+        ) ? true : current.acceptingBuzzers
+
+        if (
+          nextRemainingSeconds === current.remainingSeconds &&
+          nextResponseRemainingSeconds === current.responseRemainingSeconds &&
+          shouldAcceptBuzzers === current.acceptingBuzzers
+        ) {
+          return current
+        }
+
+        return {
+          ...current,
+          remainingSeconds: nextRemainingSeconds,
+          responseRemainingSeconds: nextResponseRemainingSeconds,
+          acceptingBuzzers: shouldAcceptBuzzers,
+        }
+      })
+    }, 250)
+
+    return () => {
+      window.clearInterval(intervalId)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!gameId) {
+      setIsConnected(false)
+      return undefined
+    }
+
+    let channel = null
+
+    try {
+      channel = echo.channel(`game.${gameId}`)
+
+      channel.listen('.buzzer.pressed', (data) => {
+        setBuzzerState((current) => ({
+          ...current,
+          pressed: true,
+          teamId: data.teamId,
+          timestamp: data.timestamp,
+          acceptingBuzzers: false,
+          responseStartedAt: data.timestamp ?? current.responseStartedAt,
+          responseEndsAt: data.responseEndsAt ?? current.responseEndsAt,
+          responseTimeLimit: data.responseTimeLimit ?? current.responseTimeLimit,
+          responseRemainingSeconds: getRemainingSeconds(data.responseEndsAt),
+          answeringTeamId: data.teamId,
+        }))
+      })
+
+      channel.listen('.buzzer.reset', () => {
+        setBuzzerState((current) => ({
+          ...current,
+          pressed: false,
+          teamId: null,
+          timestamp: null,
+          acceptingBuzzers: !current.locked && getRemainingSeconds(current.unlockAt) === 0,
+          responseStartedAt: null,
+          responseEndsAt: null,
+          responseRemainingSeconds: 0,
+          answeringTeamId: null,
+        }))
+      })
+
+      channel.listen('.buzzer.locked', ({ locked }) => {
+        setBuzzerState((current) => ({ ...current, locked }))
+      })
+
+      channel.listen('.game.started', (data) => {
+        setGameState(data.game)
+        useGameStore.getState().setCurrentGameData(data.game)
+        toast.success(`Juego ${data.game?.name ?? data.gameId} iniciado`)
+      })
+
+      channel.subscribed(() => {
+        setIsConnected(true)
+      })
+
+      channel.error((error) => {
+        console.error('Reverb channel error:', error)
+        setIsConnected(false)
+      })
+    } catch (error) {
+      console.warn('Realtime unavailable, fallback to polling only:', error)
+      setIsConnected(false)
+    }
+
+    return () => {
+      try {
+        channel?.unsubscribe()
+      } catch (error) {
+        console.warn('Error unsubscribing from channel:', error)
+      }
+
       setIsConnected(false)
     }
   }, [gameId])
 
   const pressBuzzer = useCallback(async (teamId) => {
-    if (!isConnected) {
-      toast.error('No conectado al servidor')
-      return { success: false, error: 'Not connected' }
+    if (!gameId || !teamId) {
+      return { success: false, error: 'Juego o equipo no disponible' }
     }
 
     try {
-      const data = await apiClient.post('/api/buzzer/press', { gameId, teamId })
-      return { success: true, data }
+      const response = await apiClient.post('/api/buzzer/press', { gameId, teamId })
+      const result = unwrap(response)
+
+      setBuzzerState((current) => ({
+        ...current,
+        pressed: true,
+        teamId: result.teamId ?? teamId,
+        timestamp: result.timestamp ?? new Date().toISOString(),
+        acceptingBuzzers: false,
+        responseStartedAt: result.timestamp ?? new Date().toISOString(),
+        responseEndsAt: result.responseEndsAt ?? current.responseEndsAt,
+        responseTimeLimit: result.responseTimeLimit ?? current.responseTimeLimit,
+        responseRemainingSeconds: getRemainingSeconds(result.responseEndsAt),
+        answeringTeamId: result.teamId ?? teamId,
+      }))
+
+      return { success: true, data: result }
     } catch (error) {
-      console.error('Error pressing buzzer:', error)
-      toast.error(error.data?.error || 'Error al presionar el buzzer')
-      return { success: false, error: error.message }
+      const message = error.data?.error || error.message || 'Error al presionar el buzzer'
+      toast.error(message)
+      return { success: false, error: message }
     }
-  }, [gameId, isConnected])
+  }, [gameId])
 
   const resetBuzzer = useCallback(async () => {
+    if (!gameId) {
+      return { success: false, error: 'Juego no disponible' }
+    }
+
     try {
-      const data = await apiClient.post('/api/buzzer/reset', { gameId })
-      return { success: true, data }
+      const response = await apiClient.post('/api/buzzer/reset', { gameId })
+      const result = unwrap(response)
+
+      setBuzzerState((current) => ({
+        ...current,
+        pressed: false,
+        teamId: null,
+        timestamp: null,
+        acceptingBuzzers: !current.locked && getRemainingSeconds(current.unlockAt) === 0,
+        responseStartedAt: null,
+        responseEndsAt: null,
+        responseRemainingSeconds: 0,
+        answeringTeamId: null,
+      }))
+
+      return { success: true, data: result }
     } catch (error) {
-      console.error('Error resetting buzzer:', error)
-      toast.error(error.data?.error || 'Error al reiniciar el buzzer')
-      return { success: false, error: error.message }
+      const message = error.data?.error || error.message || 'Error al reiniciar el buzzer'
+      toast.error(message)
+      return { success: false, error: message }
     }
   }, [gameId])
 
   const lockBuzzer = useCallback(async (locked = true) => {
-    try {
-      const data = await apiClient.post('/api/buzzer/lock', { gameId, locked })
-      return { success: true, data }
-    } catch (error) {
-      console.error('Error locking buzzer:', error)
-      toast.error(error.data?.error || 'Error al actualizar el bloqueo del buzzer')
-      return { success: false, error: error.message }
+    if (!gameId) {
+      return { success: false, error: 'Juego no disponible' }
     }
-  }, [gameId])
 
-  const getGameStatus = useCallback(async () => {
     try {
-      const data = await apiClient.get(`/api/games/${gameId}/lobby`)
-      return data
+      const response = await apiClient.post('/api/buzzer/lock', { gameId, locked })
+      const result = unwrap(response)
+
+      setBuzzerState((current) => ({ ...current, locked: result.locked ?? locked }))
+
+      return { success: true, data: result }
     } catch (error) {
-      console.error('Error getting game status:', error)
-      return null
+      const message = error.data?.error || error.message || 'Error al bloquear el buzzer'
+      toast.error(message)
+      return { success: false, error: message }
     }
   }, [gameId])
 
@@ -121,8 +279,8 @@ const useReverb = (gameId = 'default') => {
     pressBuzzer,
     resetBuzzer,
     lockBuzzer,
-    getGameStatus,
-    socket: null // Keep compatibility
+    getGameStatus: syncLobby,
+    socket: null,
   }
 }
 

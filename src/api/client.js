@@ -2,6 +2,26 @@ import useAuthStore from '../stores/authStore'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
+const getFirstValidationError = (data) => {
+  const errors = data?.errors
+
+  if (!errors || typeof errors !== 'object') {
+    return null
+  }
+
+  for (const value of Object.values(errors)) {
+    if (Array.isArray(value) && value.length > 0) {
+      return value[0]
+    }
+
+    if (typeof value === 'string' && value.trim()) {
+      return value
+    }
+  }
+
+  return null
+}
+
 /**
  * Cliente HTTP personalizado con manejo automático de tokens de autenticación
  */
@@ -37,9 +57,11 @@ class ApiClient {
     const data = await response.json().catch(() => null)
     
     if (!response.ok) {
-      const error = new Error(data?.message || `HTTP error ${response.status}`)
+      const validationMessage = getFirstValidationError(data)
+      const error = new Error(validationMessage || data?.message || `HTTP error ${response.status}`)
       error.status = response.status
       error.data = data
+      error.validationMessage = validationMessage
       throw error
     }
 
